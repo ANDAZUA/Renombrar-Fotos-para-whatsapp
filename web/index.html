@@ -35,7 +35,8 @@
 
         <form id="upload-form">
           <label class="dropzone" id="dropzone" for="archive">
-            <input id="archive" name="archive" type="file" accept=".zip,application/zip" required />
+            <!-- macOS can classify ZIP files with different MIME/UTI values; validate the extension in app.js instead. -->
+            <input id="archive" name="archive" type="file" accept="*/*" required />
             <span class="upload-icon" aria-hidden="true">↑</span>
             <span class="drop-title">Arrastra el ZIP aquí</span>
             <span class="drop-help">o haz clic para buscarlo en tu computador</span>
