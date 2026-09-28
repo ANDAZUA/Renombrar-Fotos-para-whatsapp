@@ -46,3 +46,17 @@ python -m unittest discover -s tests -v
 ```
 
 Este repositorio es autónomo y no depende ni modifica AMS Rocío.
+
+## Interfaz web
+
+El MVP también incluye una interfaz web local. Para iniciarla:
+
+```bash
+PYTHONPATH=src python3 -m whatsapp_photo_renamer.webapp
+```
+
+Luego abre `http://127.0.0.1:8000` en el navegador. Selecciona el ZIP de la exportación de WhatsApp y pulsa **Procesar fotos**. El resultado se descarga como `whatsapp-renombradas.zip`.
+
+El servidor acepta ZIP de hasta 50 MB y limita el contenido descomprimido a 250 MB. Los archivos se procesan en una carpeta temporal y se eliminan al terminar la respuesta. Para compartirlo con un equipo, debe desplegarse detrás de HTTPS y autenticación; esta primera versión no incluye cuentas ni almacenamiento persistente.
+
+También se incluye un `Dockerfile` para desplegarlo en un servicio compatible con contenedores.
