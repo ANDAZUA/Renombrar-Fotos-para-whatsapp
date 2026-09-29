@@ -48,6 +48,13 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(rows[0].status, "not_in_chat")
             self.assertEqual(rows[1].status, "missing_media")
 
+    def test_parse_ios_export_with_invisible_prefix_and_adjunto_marker(self):
+        text = "\u200e[9/28/26, 2:13:18 p. m.] Stephanie: Filial #15 \u200e<adjunto: 00000009-PHOTO-2026-09-28-14-13-18.jpg>\n"
+        rows = parse_chat(text)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].filename, "00000009-PHOTO-2026-09-28-14-13-18.jpg")
+        self.assertEqual(rows[0].caption, "Filial #15")
+
 
 if __name__ == "__main__":
     unittest.main()

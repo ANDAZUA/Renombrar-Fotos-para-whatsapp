@@ -68,7 +68,8 @@ def parse_chat(text: str) -> list[ChatMedia]:
     entries: list[ChatMedia] = []
     pending: ChatMedia | None = None
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        # iOS exports may prefix every line with a left-to-right mark (U+200E).
+        line = raw_line.replace("\u200e", "").replace("\ufeff", "").strip()
         if not line:
             continue
         is_new_message = bool(MESSAGE_START.match(line))
@@ -88,7 +89,8 @@ def parse_chat(text: str) -> list[ChatMedia]:
             continue
         filename = Path(media.group("name")).name
         before = body[: media.start()].strip(" -:")
-        after = body[media.end():].strip()
+        before = re.sub(r"<\s*(?:adjunto|attached)\s*:?\s*$", "", before, flags=re.I).strip(" -:")
+        after = body[media.end():].strip(" >")
         after = re.sub(r"\(?\s*(?:file attached|archivo adjunto)\s*\)?", "", after, flags=re.I).strip(" -:")
         pending = ChatMedia(filename=filename, caption=_clean_caption(after or before))
     if pending:
