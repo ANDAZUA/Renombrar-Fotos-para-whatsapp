@@ -57,6 +57,37 @@ PYTHONPATH=src python3 -m whatsapp_photo_renamer.webapp
 
 Luego abre `http://127.0.0.1:8000` en el navegador. Selecciona el ZIP de la exportación de WhatsApp y pulsa **Procesar fotos**. El resultado se descarga como `whatsapp-renombradas.zip`.
 
-El servidor acepta ZIP de hasta 50 MB y limita el contenido descomprimido a 250 MB. Los archivos se procesan en una carpeta temporal y se eliminan al terminar la respuesta. Para compartirlo con un equipo, debe desplegarse detrás de HTTPS y autenticación; esta primera versión no incluye cuentas ni almacenamiento persistente.
+El servidor acepta ZIP de hasta 50 MB y limita el contenido descomprimido a 250 MB. Los archivos se procesan en una carpeta temporal y se eliminan al terminar la respuesta. La interfaz exige autenticación, limita los intentos de inicio de sesión y protege el procesamiento con una cookie `HttpOnly`, `SameSite=Lax`. Los resultados solo se entregan a la sesión autenticada que realizó la operación y no se almacenan en el servidor.
+
+### Configuración para compartir
+
+1. Copia `.env.example` a `.env` y define `APP_USERNAME`.
+2. Genera un hash de contraseña:
+
+   ```bash
+   PYTHONPATH=src python3 -m whatsapp_photo_renamer.webapp --hash-password
+   ```
+
+3. Guarda el resultado en `APP_PASSWORD_HASH` dentro de `.env` **entre comillas simples** (el hash contiene `$`), define `SESSION_SECRET` con una cadena aleatoria larga y carga las variables antes de iniciar el servidor:
+
+   ```dotenv
+   APP_USERNAME=equipo
+   APP_PASSWORD_HASH='scrypt$...$...'
+   SESSION_SECRET='...'
+   ```
+
+   ```bash
+   set -a; source .env; set +a
+   PYTHONPATH=src python3 -m whatsapp_photo_renamer.webapp
+   ```
+
+   Puedes generar el secreto con:
+
+   ```bash
+   python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+   ```
+4. En producción publica el contenedor detrás de un proxy HTTPS (por ejemplo, Caddy, Nginx o la terminación TLS del proveedor) y configura `COOKIE_SECURE=1`. No expongas el servidor HTTP directamente a internet.
+
+La autenticación incluida es un acceso de equipo de una sola cuenta. Para varias personas con cuentas separadas, auditoría o recuperación de contraseña se requiere una fase posterior con una base de datos y un proveedor de identidad.
 
 También se incluye un `Dockerfile` para desplegarlo en un servicio compatible con contenedores.

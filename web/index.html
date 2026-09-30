@@ -16,6 +16,7 @@
           <h1>Renombrar fotos de WhatsApp</h1>
         </div>
         <span class="privacy-badge">Procesamiento temporal</span>
+        <button class="logout-button" id="logout-button" type="button" hidden>Cerrar sesión</button>
       </header>
 
       <section class="intro" aria-labelledby="intro-title">
@@ -24,7 +25,18 @@
         <p>Sube la exportación del chat una sola vez. La herramienta encuentra las fotos, usa sus pies de foto y te entrega un ZIP ordenado con reportes.</p>
       </section>
 
-      <section class="workspace" aria-labelledby="upload-title">
+      <section class="workspace auth-panel" id="auth-panel" aria-labelledby="login-title" hidden>
+        <p class="step">Acceso del equipo</p>
+        <h2 id="login-title">Inicia sesión para procesar archivos.</h2>
+        <form id="login-form" class="login-form">
+          <label>Usuario<input id="username" name="username" autocomplete="username" required /></label>
+          <label>Contraseña<input id="password" name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="primary-button" type="submit">Iniciar sesión →</button>
+        </form>
+        <div class="status" id="login-status" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section class="workspace" id="upload-workspace" aria-labelledby="upload-title" hidden>
         <div class="section-heading">
           <div>
             <p class="step">01 / Cargar</p>
@@ -52,7 +64,7 @@
         <a class="download-button" id="download-link" hidden download="whatsapp-renombradas.zip">Descargar fotos renombradas ↓</a>
       </section>
 
-      <section class="how-it-works" aria-labelledby="flow-title">
+      <section class="how-it-works" id="how-it-works" aria-labelledby="flow-title" hidden>
         <div>
           <p class="step">02 / Resultado</p>
           <h2 id="flow-title">Un solo flujo para todo el equipo</h2>

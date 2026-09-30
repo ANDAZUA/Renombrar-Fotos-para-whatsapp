@@ -1,25 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import io
 import json
-import mimetypes
+import os
+import secrets
 import shutil
 import tempfile
+import time
 import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .auth import SessionStore, hash_password, verify_password
 from .core import MEDIA_EXTENSIONS, process, write_reports
 
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_FILES = 1_000
 MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
+MAX_LOGIN_BODY_BYTES = 8 * 1024
+SESSION_COOKIE = "whatsapp_session"
+SESSION_TTL_SECONDS = 8 * 60 * 60
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PROJECT_ROOT / "web"
+SESSIONS = SessionStore(SESSION_TTL_SECONDS, os.getenv("SESSION_SECRET"))
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 
 def safe_extract_zip(payload: bytes, destination: Path | None = None) -> None:
@@ -111,15 +120,74 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'")
+        self._security_headers()
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _security_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+        if self._secure_cookie():
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    @staticmethod
+    def _secure_cookie() -> bool:
+        return os.getenv("COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
+
+    def _cookie(self) -> str | None:
+        raw = self.headers.get("Cookie", "")
+        for item in raw.split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name == SESSION_COOKIE:
+                return value
+        return None
+
+    def _session(self):
+        return SESSIONS.get(self._cookie())
+
+    def _require_session(self) -> bool:
+        if self._session() is not None:
+            return True
+        self._send_json(HTTPStatus.UNAUTHORIZED, {"error": {"code": "AUTH_REQUIRED", "message": "Inicia sesión para continuar."}})
+        return False
+
+    def _set_session_cookie(self, token: str) -> None:
+        attributes = f"{SESSION_COOKIE}={token}; Max-Age={SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax"
+        if self._secure_cookie():
+            attributes += "; Secure"
+        self.send_header("Set-Cookie", attributes)
+
+    def _clear_session_cookie(self) -> None:
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax")
+
+    def _credentials(self) -> tuple[str, str] | None:
+        username = os.getenv("APP_USERNAME", "").strip()
+        password_hash = os.getenv("APP_PASSWORD_HASH", "").strip()
+        return (username, password_hash) if username and password_hash else None
+
+    def _login_allowed(self) -> bool:
+        now = time.time()
+        address = self.client_address[0]
+        attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(address, []) if stamp > now - 15 * 60]
+        LOGIN_ATTEMPTS[address] = attempts
+        return len(attempts) < 10
+
+    def _record_login_attempt(self) -> None:
+        self._login_allowed()
+        LOGIN_ATTEMPTS[self.client_address[0]].append(time.time())
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+        if path == "/api/session":
+            session = self._session()
+            self._send_json(HTTPStatus.OK, {"authenticated": session is not None, "username": session.username if session else None})
             return
         if path == "/" or path == "/index.html":
             self._serve_file(WEB_ROOT / "index.html", "text/html; charset=utf-8")
@@ -141,17 +209,31 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'")
+        self._security_headers()
         self.end_headers()
         self.wfile.write(data)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/process":
+        path = urlparse(self.path).path
+        if path == "/api/login":
+            self._login()
+            return
+        if path == "/api/logout":
+            SESSIONS.revoke(self._cookie())
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self._clear_session_cookie()
+            self._security_headers()
+            self.end_headers()
+            return
+        if path != "/api/process":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": {"code": "NOT_FOUND", "message": "Recurso no encontrado."}})
             return
-        content_length = int(self.headers.get("Content-Length", "0"))
+        if not self._require_session():
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
         if content_length <= 0 or content_length > MAX_UPLOAD_BYTES:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": {"code": "UPLOAD_TOO_LARGE", "message": "El archivo debe pesar menos de 50 MB."}})
             return
@@ -182,9 +264,40 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", 'attachment; filename="whatsapp-renombradas.zip"')
         self.send_header("Content-Length", str(len(result)))
         self.send_header("X-WhatsApp-Summary", json.dumps(summary, separators=(",", ":")))
-        self.send_header("X-Content-Type-Options", "nosniff")
+        self._security_headers()
         self.end_headers()
         self.wfile.write(result)
+
+    def _login(self) -> None:
+        if not self._login_allowed():
+            self._send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": {"code": "LOGIN_RATE_LIMIT", "message": "Demasiados intentos. Espera 15 minutos."}})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_LOGIN_BODY_BYTES:
+                raise ValueError
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            username = str(body.get("username", ""))
+            password = str(body.get("password", ""))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            self._record_login_attempt()
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": {"code": "INVALID_LOGIN", "message": "Usuario o contraseña incorrectos."}})
+            return
+        credentials = self._credentials()
+        valid = credentials is not None and secrets.compare_digest(username, credentials[0]) and verify_password(password, credentials[1])
+        self._record_login_attempt()
+        if not valid:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": {"code": "INVALID_LOGIN", "message": "Usuario o contraseña incorrectos."}})
+            return
+        token = SESSIONS.create(username)
+        self.send_response(HTTPStatus.OK)
+        self._set_session_cookie(token)
+        self._security_headers()
+        encoded = json.dumps({"authenticated": True, "username": username}).encode("utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def log_message(self, format: str, *args: object) -> None:
         # Keep filenames and captions out of logs; only emit the request shape.
@@ -195,7 +308,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the WhatsApp Photo Renamer web interface")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8000, type=int)
+    parser.add_argument("--hash-password", action="store_true", help="Genera un hash scrypt para APP_PASSWORD_HASH y sale")
     args = parser.parse_args()
+    if args.hash_password:
+        print(hash_password(getpass.getpass("Contraseña (mínimo 12 caracteres): ")))
+        return 0
+    missing = [name for name in ("APP_USERNAME", "APP_PASSWORD_HASH", "SESSION_SECRET") if not os.getenv(name)]
+    if missing:
+        raise SystemExit(f"Configura {', '.join(missing)} antes de iniciar el servidor.")
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
     print(f"WhatsApp Photo Renamer: http://{args.host}:{args.port}")
     try:
